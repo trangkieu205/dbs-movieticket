@@ -1,13 +1,11 @@
 USE master;
 GO
 
--- 1. Chuyển database về chế độ 1 người dùng và NGẮT ngay lập tức các kết nối khác
 ALTER DATABASE MovieTicketDB
 SET SINGLE_USER 
 WITH ROLLBACK IMMEDIATE;
 GO
 
--- 2. Bây giờ thì xóa thoải mái
 DROP DATABASE MovieTicketDB
 GO
 CREATE DATABASE MovieTicketDB
@@ -177,7 +175,7 @@ CREATE TABLE GiaoDich (
 CREATE TABLE VePhim (
     MaVe VARCHAR(20) NOT NULL,
     MaKhachHang VARCHAR(10) NOT NULL,
-    MaGiaoDich VARCHAR(20), 
+    MaGiaoDich VARCHAR(20) NULL,
     GiaVe DECIMAL(18,0) CHECK (GiaVe >= 0),
     TrangThai NVARCHAR(20) DEFAULT N'Chưa thanh toán',
     ThoiGianDat DATETIME DEFAULT GETDATE(),
@@ -185,6 +183,7 @@ CREATE TABLE VePhim (
     FOREIGN KEY (MaKhachHang) REFERENCES KhachHang(MaKhachHang),
     FOREIGN KEY (MaGiaoDich) REFERENCES GiaoDich(MaGiaoDich)
 );
+
 
 -- 14. Bảng Thuộc (ChiTietVe)
 CREATE TABLE Thuoc (
@@ -219,12 +218,7 @@ CREATE TABLE DiemThayDoi (
     FOREIGN KEY (MaLichSu) REFERENCES LichSuDiem(MaLichSu)
 );
 
--- 17. Thêm ràng buộc khóa ngoại vòng
-ALTER TABLE VePhim
-ADD CONSTRAINT FK_VePhim_GiaoDich
-FOREIGN KEY (MaGiaoDich) REFERENCES GiaoDich(MaGiaoDich);
 GO
-
 -- 18. Trigger
 -- Tự động cập nhật trạng thái ghế và vé sang "Đã đặt" nếu "TrangThai" GiaoDich 
 -- từ "Chưa thanh toán" -> "Thành công"
@@ -494,20 +488,24 @@ GO
 -- 2.2--
 --2.2.1--
 GO
-CREATE TRIGGER trg_KiemTraGheTrong
+CREATE OR ALTER TRIGGER trg_KiemTraGheTrong
 ON Thuoc
 INSTEAD OF INSERT
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     IF EXISTS (
-        SELECT 1 
-        FROM Thuoc t
-        JOIN inserted i ON 
-            t.MaPhim = i.MaPhim AND
-            t.MaSuat = i.MaSuat AND
-            t.MaRap = i.MaRap AND
+        SELECT 1
+        FROM inserted i
+        JOIN Thuoc t ON 
+            t.MaPhim   = i.MaPhim AND
+            t.MaSuat   = i.MaSuat AND
+            t.MaRap    = i.MaRap AND
             t.TenPhong = i.TenPhong AND
-            t.MaGhe = i.MaGhe
+            t.MaGhe    = i.MaGhe
+        JOIN VePhim v ON t.MaVe = v.MaVe
+        WHERE v.TrangThai IN (N'Đã đặt', N'Chưa thanh toán')
     )
     BEGIN
         RAISERROR(N'Ghế này đã được đặt ở suất chiếu này!', 16, 1);
@@ -517,13 +515,14 @@ BEGIN
     INSERT INTO Thuoc (MaVe, MaPhim, MaSuat, MaRap, TenPhong, MaGhe)
     SELECT MaVe, MaPhim, MaSuat, MaRap, TenPhong, MaGhe
     FROM inserted;
-END
+END;
 GO
+
 
 --2.2.2--
 
 GO
-CREATE TRIGGER trg_CongDiemKhachHang
+CREATE OR ALTER TRIGGER trg_CongDiemKhachHang
 ON GiaoDich
 AFTER INSERT, UPDATE
 AS
@@ -533,7 +532,7 @@ BEGIN
             i.MaKhachHangDat,
             i.TongSoTien
         FROM inserted i
-        WHERE i.TrangThai = 'Success'
+        WHERE i.TrangThai = N'Thành công'
     )
     UPDATE KhachHang
     SET DiemTichLuy = DiemTichLuy + (GD.TongSoTien * 0.1)
@@ -544,7 +543,7 @@ GO
 
 --2.4--
 GO
-CREATE FUNCTION fn_TongTienKhachHangDaTieu (@MaKH VARCHAR(10))
+CREATE OR ALTER FUNCTION fn_TongTienKhachHangDaTieu (@MaKH VARCHAR(10))
 RETURNS DECIMAL(18,0)
 AS
 BEGIN
@@ -558,7 +557,7 @@ BEGIN
         SELECT TongSoTien
         FROM GiaoDich
         WHERE MaKhachHangDat = @MaKH
-          AND TrangThai = 'Success';
+          AND TrangThai = N'Thành công';
 
     OPEN cur;
     FETCH NEXT FROM cur INTO @Tien;
@@ -577,7 +576,7 @@ END
 GO
 --------------------------
 GO
-CREATE FUNCTION fn_DemSoVeTheoPhim(@MaPhim VARCHAR(10))
+CREATE OR ALTER FUNCTION fn_DemSoVeTheoPhim(@MaPhim VARCHAR(10))
 RETURNS INT
 AS
 BEGIN
@@ -600,7 +599,7 @@ BEGIN
         IF EXISTS (
             SELECT 1 FROM VePhim 
             WHERE MaVe = @MaVe 
-              AND TrangThai = 'DaDat'
+              AND TrangThai = N'Đã đặt'
         )
             SET @SoLuong = @SoLuong + 1;
 
@@ -614,9 +613,7 @@ BEGIN
 END
 GO
 
--- ============================================
--- CÁC THỦ TỤC VÀ TRIGGER BỔ SUNG CHO ỨNG DỤNG
--- ============================================
+----------------------------------- TÁC VỤ
 
 -- 1. Stored Procedure: Đặt vé (tích hợp tất cả logic)
 GO
@@ -741,78 +738,83 @@ GO
 -- 2. Stored Procedure: Hủy vé
 GO
 CREATE OR ALTER PROCEDURE HuyVe
-    @MaVe VARCHAR(20),
-    @ThongBao NVARCHAR(255) OUTPUT
+    @MaVe      VARCHAR(20),
+    @ThongBao  NVARCHAR(255) OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- 1. Kiểm tra vé tồn tại
+    IF NOT EXISTS (SELECT 1 FROM VePhim WHERE MaVe = @MaVe)
+    BEGIN
+        SET @ThongBao = N'Vé không tồn tại';
+        RETURN -1;
+    END
+
+    DECLARE @TrangThai NVARCHAR(20);
+    DECLARE @MaGD      VARCHAR(20);
+
+    SELECT @TrangThai = TrangThai, @MaGD = MaGiaoDich
+    FROM VePhim
+    WHERE MaVe = @MaVe;
+
+    -- 2. Không cho hủy vé đã đặt (đã thanh toán)
+    IF (@TrangThai = N'Đã đặt')
+    BEGIN
+        SET @ThongBao = N'Không thể hủy vé đã đặt';
+        RETURN -2;
+    END
+
+    -- 3. Nếu đã hủy rồi thì thôi
+    IF (@TrangThai = N'Đã hủy')
+    BEGIN
+        SET @ThongBao = N'Vé đã được hủy trước đó';
+        RETURN -3;
+    END
+
     BEGIN TRY
         BEGIN TRANSACTION;
-        
-        DECLARE @TrangThai NVARCHAR(20);
-        DECLARE @MaGD VARCHAR(20);
-        
-        -- Kiểm tra vé
-        SELECT @TrangThai = TrangThai, @MaGD = MaGiaoDich
-        FROM VePhim
+
+        -- 4. Giải phóng ghế: đưa về Trống
+        UPDATE g
+        SET g.TinhTrang = N'Trống'
+        FROM Ghe g
+        JOIN Thuoc t
+          ON  g.MaRap    = t.MaRap
+          AND g.TenPhong = t.TenPhong
+          AND g.MaGhe    = t.MaGhe
+        WHERE t.MaVe = @MaVe;
+
+        -- 5. XÓA mapping ghế–vé trong Thuoc
+        DELETE FROM Thuoc
         WHERE MaVe = @MaVe;
-        
-        IF @TrangThai IS NULL
-        BEGIN
-            SET @ThongBao = N'Vé không tồn tại';
-            ROLLBACK TRANSACTION;
-            RETURN -1;
-        END
-        
-        IF @TrangThai = N'Đã đặt'
-        BEGIN
-            SET @ThongBao = N'Không thể hủy vé đã thanh toán';
-            ROLLBACK TRANSACTION;
-            RETURN -2;
-        END
-        
-        IF @TrangThai = N'Đã hủy'
-        BEGIN
-            SET @ThongBao = N'Vé đã được hủy trước đó';
-            ROLLBACK TRANSACTION;
-            RETURN -3;
-        END
-        
-        -- Cập nhật trạng thái vé
+
+        -- 6. Cập nhật trạng thái vé -> Đã hủy
         UPDATE VePhim
         SET TrangThai = N'Đã hủy'
         WHERE MaVe = @MaVe;
-        
-        -- Cập nhật trạng thái giao dịch
-        UPDATE GiaoDich
-        SET TrangThai = N'Đã hủy'
-        WHERE MaGiaoDich = @MaGD;
-        
-        -- Hoàn lại mã khuyến mãi nếu có
-        DECLARE @MaKM VARCHAR(20);
-        SELECT @MaKM = MaKM FROM GiaoDich WHERE MaGiaoDich = @MaGD;
-        
-        IF @MaKM IS NOT NULL
+
+        -- 7. Cập nhật trạng thái giao dịch (nếu có)
+        IF @MaGD IS NOT NULL
         BEGIN
-            UPDATE MaKhuyenMai
-            SET SoLuong = SoLuong + 1
-            WHERE MaKM = @MaKM;
+            UPDATE GiaoDich
+            SET TrangThai = N'Đã hủy'
+            WHERE MaGiaoDich = @MaGD;
         END
-        
+
         SET @ThongBao = N'Hủy vé thành công';
         COMMIT TRANSACTION;
         RETURN 0;
-        
     END TRY
     BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-        
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
         SET @ThongBao = ERROR_MESSAGE();
-        RETURN -999;
+        RETURN -99;
     END CATCH
-END
+END;
 GO
+
+
 
 -- 3. Stored Procedure: Thanh toán vé
 GO
@@ -924,6 +926,7 @@ RETURN
         sc.GioChieu,
         v.GiaVe,
         v.TrangThai,
+        v.MaGiaoDich AS MaGiaoDich,  
         gd.MaKM,
         gd.PhuongThucTT,
         gd.ThoiGianThucHien,
@@ -1037,6 +1040,9 @@ LEFT JOIN VePhim v ON kh.MaKhachHang = v.MaKhachHang
 LEFT JOIN GiaoDich gd ON v.MaGiaoDich = gd.MaGiaoDich
 GROUP BY kh.MaKhachHang, tk.TenDangNhap, tk.Email, kh.DiemTichLuy
 GO
+-- ============================================================
+-- WRAPPER STORED PROCEDURES
+-- ============================================================
 
 -- 1. Wrapper: GetTicketsByCustomer
 GO
@@ -1059,18 +1065,18 @@ BEGIN
             ELSE 'ChuaThanhToan'
         END as statusText,
         gd.MaKM as promoCode,
-        v.GiaVe as price
+        v.GiaVe as price,
+        v.MaGiaoDich as MaGiaoDich    
     FROM VePhim v
-    JOIN Thuoc t ON v.MaVe = t.MaVe
+    JOIN Thuoc t  ON v.MaVe = t.MaVe
     JOIN SuatChieu sc ON t.MaPhim = sc.MaPhim AND t.MaSuat = sc.MaSuat
-    JOIN Phim p ON t.MaPhim = p.MaPhim
-    JOIN Rap r ON t.MaRap = r.MaRap
+    JOIN Phim p   ON t.MaPhim = p.MaPhim
+    JOIN Rap r    ON t.MaRap = r.MaRap
     LEFT JOIN GiaoDich gd ON v.MaGiaoDich = gd.MaGiaoDich
     WHERE v.MaKhachHang = @MaKH
     ORDER BY v.ThoiGianDat DESC;
 END
 GO
-
 -- 2. Wrapper: GetTheaters
 GO
 CREATE OR ALTER PROCEDURE GetTheaters
@@ -1272,7 +1278,7 @@ BEGIN
 END
 GO
 
--- 12. Wrapper: CancelTicket (wrapper cho HuyVe để có return structure phù hợp)
+-- 12. Wrapper: CancelTicket 
 GO
 CREATE OR ALTER PROCEDURE CancelTicket
     @MaVe VARCHAR(20)
@@ -1291,96 +1297,190 @@ GO
 -- FIX EXISTING FUNCTIONS TO MATCH SQL STANDARDS
 -- ============================================================
 
--- Fix fn_TongTienKhachHangDaTieu: Sửa 'Success' thành N'Thành công'
+
 GO
-CREATE OR ALTER FUNCTION fn_TongTienKhachHangDaTieu (@MaKH VARCHAR(10))
-RETURNS DECIMAL(18,0)
+CREATE OR ALTER PROCEDURE Rap_Insert
+    @MaRap       VARCHAR(10),
+    @TenRap      NVARCHAR(100),
+    @DiaChi      NVARCHAR(255) = NULL,
+    @ThanhPho    NVARCHAR(50)  = NULL,
+    @SoDienThoai VARCHAR(15)   = NULL,
+    @Email       VARCHAR(50)   = NULL,
+    @ThongBao    NVARCHAR(255) OUTPUT
 AS
 BEGIN
-    DECLARE @TongTien DECIMAL(18,0) = 0;
-    DECLARE @Tien DECIMAL(18,0);
+    SET NOCOUNT ON;
+    SET @ThongBao = N'';
 
-    IF NOT EXISTS (SELECT 1 FROM KhachHang WHERE MaKhachHang = @MaKH)
-        RETURN -1; 
-
-    DECLARE cur CURSOR FOR 
-        SELECT TongSoTien
-        FROM GiaoDich
-        WHERE MaKhachHangDat = @MaKH
-          AND TrangThai = N'Thành công';
-
-    OPEN cur;
-    FETCH NEXT FROM cur INTO @Tien;
-
-    WHILE @@FETCH_STATUS = 0
+    -- Kiểm tra mã rạp
+    IF (@MaRap IS NULL OR LTRIM(RTRIM(@MaRap)) = '')
     BEGIN
-        SET @TongTien = @TongTien + @Tien;
-        FETCH NEXT FROM cur INTO @Tien;
-    END
-
-    CLOSE cur;
-    DEALLOCATE cur;
-
-    RETURN @TongTien;
-END
-GO
-
--- Fix fn_DemSoVeTheoPhim: Sửa 'DaDat' thành N'Đã đặt'
-GO
-CREATE OR ALTER FUNCTION fn_DemSoVeTheoPhim(@MaPhim VARCHAR(10))
-RETURNS INT
-AS
-BEGIN
-    DECLARE @SoLuong INT = 0;
-    DECLARE @MaVe VARCHAR(20);
-
-    IF NOT EXISTS (SELECT 1 FROM Phim WHERE MaPhim = @MaPhim)
+        SET @ThongBao = N'Mã rạp không được để trống';
         RETURN -1;
-
-    DECLARE cur CURSOR FOR 
-        SELECT MaVe
-        FROM Thuoc
-        WHERE MaPhim = @MaPhim;
-
-    OPEN cur;
-    FETCH NEXT FROM cur INTO @MaVe;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        IF EXISTS (
-            SELECT 1 FROM VePhim 
-            WHERE MaVe = @MaVe 
-              AND TrangThai = N'Đã đặt'
-        )
-            SET @SoLuong = @SoLuong + 1;
-
-        FETCH NEXT FROM cur INTO @MaVe;
     END
 
-    CLOSE cur;
-    DEALLOCATE cur;
+    IF EXISTS (SELECT 1 FROM Rap WHERE MaRap = @MaRap)
+    BEGIN
+        SET @ThongBao = N'Mã rạp đã tồn tại';
+        RETURN -2;
+    END
 
-    RETURN @SoLuong;
+    -- Kiểm tra tên rạp
+    IF (@TenRap IS NULL OR LTRIM(RTRIM(@TenRap)) = '')
+    BEGIN
+        SET @ThongBao = N'Tên rạp không được để trống';
+        RETURN -3;
+    END
+
+    -- Kiểm tra số điện thoại (nếu có)
+    IF (@SoDienThoai IS NOT NULL AND LTRIM(RTRIM(@SoDienThoai)) <> '')
+    BEGIN
+        IF @SoDienThoai LIKE '%[^0-9]%' OR LEN(@SoDienThoai) < 8 OR LEN(@SoDienThoai) > 15
+        BEGIN
+            SET @ThongBao = N'Số điện thoại rạp không hợp lệ (8–15 chữ số)';
+            RETURN -4;
+        END
+    END
+
+    -- Kiểm tra email (nếu có)
+    IF (@Email IS NOT NULL AND LTRIM(RTRIM(@Email)) <> '' AND @Email NOT LIKE '%_@_%._%')
+    BEGIN
+        SET @ThongBao = N'Email rạp không hợp lệ';
+        RETURN -5;
+    END
+
+    INSERT INTO Rap (MaRap, TenRap, DiaChi, ThanhPho, SoDienThoai, Email)
+    VALUES (@MaRap, @TenRap, @DiaChi, @ThanhPho, @SoDienThoai, @Email);
+
+    SET @ThongBao = N'Thêm rạp mới thành công';
+    RETURN 0;
 END
 GO
 
--- Fix trigger: Sửa 'Success' thành N'Thành công'
 GO
-CREATE OR ALTER TRIGGER trg_CongDiemKhachHang
-ON GiaoDich
-AFTER INSERT, UPDATE
+CREATE OR ALTER PROCEDURE Rap_Update
+    @MaRap       VARCHAR(10),
+    @TenRap      NVARCHAR(100),
+    @DiaChi      NVARCHAR(255) = NULL,
+    @ThanhPho    NVARCHAR(50)  = NULL,
+    @SoDienThoai VARCHAR(15)   = NULL,
+    @Email       VARCHAR(50)   = NULL,
+    @ThongBao    NVARCHAR(255) OUTPUT
 AS
 BEGIN
-    ;WITH GD AS (
-        SELECT 
-            i.MaKhachHangDat,
-            i.TongSoTien
-        FROM inserted i
-        WHERE i.TrangThai = N'Thành công'
-    )
-    UPDATE KhachHang
-    SET DiemTichLuy = DiemTichLuy + (GD.TongSoTien * 0.1)
-    FROM KhachHang KH
-    JOIN GD ON KH.MaKhachHang = GD.MaKhachHangDat;
+    SET NOCOUNT ON;
+    SET @ThongBao = N'';
+
+    IF NOT EXISTS (SELECT 1 FROM Rap WHERE MaRap = @MaRap)
+    BEGIN
+        SET @ThongBao = N'Rạp không tồn tại';
+        RETURN -1;
+    END
+
+    IF (@TenRap IS NULL OR LTRIM(RTRIM(@TenRap)) = '')
+    BEGIN
+        SET @ThongBao = N'Tên rạp không được để trống';
+        RETURN -2;
+    END
+
+    IF (@SoDienThoai IS NOT NULL AND LTRIM(RTRIM(@SoDienThoai)) <> '')
+    BEGIN
+        IF @SoDienThoai LIKE '%[^0-9]%' OR LEN(@SoDienThoai) < 8 OR LEN(@SoDienThoai) > 15
+        BEGIN
+            SET @ThongBao = N'Số điện thoại rạp không hợp lệ (8–15 chữ số)';
+            RETURN -3;
+        END
+    END
+
+    IF (@Email IS NOT NULL AND LTRIM(RTRIM(@Email)) <> '' AND @Email NOT LIKE '%_@_%._%')
+    BEGIN
+        SET @ThongBao = N'Email rạp không hợp lệ';
+        RETURN -4;
+    END
+
+    UPDATE Rap
+    SET TenRap      = @TenRap,
+        DiaChi      = @DiaChi,
+        ThanhPho    = @ThanhPho,
+        SoDienThoai = @SoDienThoai,
+        Email       = @Email
+    WHERE MaRap = @MaRap;
+
+    SET @ThongBao = N'Cập nhật thông tin rạp thành công';
+    RETURN 0;
 END
 GO
+
+GO
+CREATE OR ALTER PROCEDURE Rap_Delete
+    @MaRap    VARCHAR(10),
+    @ThongBao NVARCHAR(255) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @ThongBao = N'';
+
+    IF NOT EXISTS (SELECT 1 FROM Rap WHERE MaRap = @MaRap)
+    BEGIN
+        SET @ThongBao = N'Rạp không tồn tại';
+        RETURN -1;
+    END
+
+    -- Không cho xóa rạp đang có phòng chiếu / ghế / nhân viên / suất chiếu
+    IF EXISTS (SELECT 1 FROM PhongChieu WHERE MaRap = @MaRap)
+       OR EXISTS (SELECT 1 FROM Ghe        WHERE MaRap = @MaRap)
+       OR EXISTS (SELECT 1 FROM NhanVien   WHERE MaRap = @MaRap)
+       OR EXISTS (SELECT 1 FROM DuocChieu  WHERE MaRap = @MaRap)
+    BEGIN
+        SET @ThongBao = N'Không thể xóa rạp đang có phòng chiếu, ghế, nhân viên hoặc suất chiếu liên quan';
+        RETURN -2;
+    END
+
+    DELETE FROM Rap WHERE MaRap = @MaRap;
+
+    SET @ThongBao = N'Xóa rạp thành công';
+    RETURN 0;
+END
+GO
+GO
+
+CREATE OR ALTER PROCEDURE GetPoints
+    @MaKH VARCHAR(10)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        DiemTichLuy AS Points
+    FROM KhachHang
+    WHERE MaKhachHang = @MaKH;
+END;
+GO
+GO
+CREATE OR ALTER PROCEDURE GetShowtimeSeatStats
+    @MaPhim VARCHAR(10),
+    @MaSuat VARCHAR(10)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        COUNT(g.MaGhe) AS TongSoGhe,
+        COUNT(CASE WHEN v.TrangThai IN (N'Đã đặt', N'Chưa thanh toán') THEN 1 END) AS SoGheKhongTrong
+    FROM Ghe g
+    JOIN Thuoc t ON g.MaRap = t.MaRap 
+                AND g.TenPhong = t.TenPhong
+                AND g.MaGhe = t.MaGhe
+    LEFT JOIN VePhim v ON t.MaVe = v.MaVe
+    WHERE t.MaPhim = @MaPhim
+      AND t.MaSuat = @MaSuat
+    GROUP BY t.MaPhim, t.MaSuat
+    HAVING COUNT(g.MaGhe) > 0;
+END;
+GO
+
+DELETE t
+FROM Thuoc t
+JOIN VePhim v ON t.MaVe = v.MaVe
+WHERE v.TrangThai = N'Đã hủy';
+
