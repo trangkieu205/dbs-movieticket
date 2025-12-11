@@ -1483,4 +1483,106 @@ DELETE t
 FROM Thuoc t
 JOIN VePhim v ON t.MaVe = v.MaVe
 WHERE v.TrangThai = N'Đã hủy';
+GO
+CREATE OR ALTER PROCEDURE ThanhToanNhieuVe
+    @MaKH         VARCHAR(10),
+    @DanhSachMaVe NVARCHAR(MAX),  -- JSON: ["VE003","VE008",...]
+    @PhuongThucTT NVARCHAR(50),
+    @MaKM         VARCHAR(20) = NULL,
+    @MaGD         VARCHAR(20) OUTPUT,
+    @TongTien     DECIMAL(18,0) OUTPUT,
+    @ThongBao     NVARCHAR(255) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF NOT EXISTS (SELECT 1 FROM KhachHang WHERE MaKhachHang = @MaKH)
+        BEGIN
+            SET @ThongBao = N'Khách hàng không tồn tại';
+            ROLLBACK TRANSACTION;
+            RETURN -1;
+        END
+
+        -- Lấy danh sách vé từ JSON
+        DECLARE @Ve TABLE (MaVe VARCHAR(20));
+
+        INSERT INTO @Ve(MaVe)
+        SELECT value
+        FROM OPENJSON(@DanhSachMaVe);
+
+        -- Kiểm tra vé hợp lệ & chưa thanh toán
+        IF EXISTS (
+            SELECT 1 FROM VePhim v
+            JOIN @Ve tmp ON v.MaVe = tmp.MaVe
+            WHERE v.TrangThai <> N'Chưa thanh toán'
+        )
+        BEGIN
+            SET @ThongBao = N'Có vé không ở trạng thái Chưa thanh toán';
+            ROLLBACK TRANSACTION;
+            RETURN -2;
+        END
+
+        -- Tính tổng gốc
+        SELECT @TongTien = SUM(GiaVe)
+        FROM VePhim v
+        JOIN @Ve tmp ON v.MaVe = tmp.MaVe;
+
+        IF @TongTien IS NULL
+        BEGIN
+            SET @ThongBao = N'Không có vé hợp lệ';
+            ROLLBACK TRANSACTION;
+            RETURN -3;
+        END
+
+        DECLARE @PhanTramGiam FLOAT = 0;
+
+        IF @MaKM IS NOT NULL
+        BEGIN
+            SELECT @PhanTramGiam = PhanTramGiam
+            FROM MaKhuyenMai
+            WHERE MaKM = @MaKM
+              AND HanSuDung >= CAST(GETDATE() AS DATE)
+              AND SoLuong > 0;
+
+            IF @PhanTramGiam IS NULL
+            BEGIN
+                SET @MaKM = NULL; -- mã không hợp lệ -> bỏ
+            END
+            ELSE
+            BEGIN
+                SET @TongTien = @TongTien * (1 - @PhanTramGiam / 100.0);
+
+                UPDATE MaKhuyenMai
+                SET SoLuong = SoLuong - 1
+                WHERE MaKM = @MaKM;
+            END
+        END
+
+        SET @MaGD = 'GD' + FORMAT(GETDATE(), 'yyyyMMddHHmmss')
+                   + RIGHT('000' + CAST(ABS(CHECKSUM(NEWID())) % 1000 AS VARCHAR), 3);
+
+        INSERT INTO GiaoDich(MaGiaoDich, TongSoTien, PhuongThucTT, MaKM, MaKhachHangDat, TrangThai)
+        VALUES(@MaGD, @TongTien, @PhuongThucTT, @MaKM, @MaKH, N'Thành công');
+
+        -- Gán tất cả vé vào giao dịch này và chuyển sang trạng thái "Đã đặt"
+        UPDATE VePhim
+        SET MaGiaoDich = @MaGD,
+            TrangThai  = N'Đã đặt'
+        WHERE MaVe IN (SELECT MaVe FROM @Ve);
+
+        -- Trigger CapNhatTrangThaiVeVaGhe cũng sẽ cập nhật ghế nếu cần
+
+        SET @ThongBao = N'Thanh toán thành công';
+        COMMIT TRANSACTION;
+        RETURN 0;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        SET @ThongBao = ERROR_MESSAGE();
+        RETURN -99;
+    END CATCH
+END
+GO
 

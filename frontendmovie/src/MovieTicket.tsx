@@ -66,9 +66,7 @@ interface BookingResult {
 interface Stats {
   savings?: number;
   spending?: number;
-  points?: number;  
-  bookedSeats?: number;
-  ticketCount?: number;
+  points?: number;
 }
 
 type BookingStep = 'theater' | 'movies' | 'showtime' | 'seat' | 'confirm';
@@ -167,12 +165,6 @@ class ApiService {
     return res.json();
   }
 
-  static async getShowtimeSeatStats(movieId: string, showtimeId: string) {
-    const res = await fetch(`${API_BASE_URL}/stats/showtime-seats/${movieId}/${showtimeId}`);
-    if (!res.ok) throw new Error('Không thể tải thống kê ghế');
-    return res.json(); // { TongSoGhe, SoGheKhongTrong }
-  }
-
   static async checkPromo(code: string) {
     const res = await fetch(`${API_BASE_URL}/promo/${code}`);
     if (!res.ok) throw new Error('Mã khuyến mãi không hợp lệ hoặc đã hết hạn');
@@ -221,48 +213,37 @@ class ApiService {
     const data = await res.json();
     return data.spending ?? 0;
   }
-static async getPoints(customerId: string): Promise<number> {
-  const res = await fetch(`${API_BASE_URL}/stats/points/${customerId}`);
-  if (!res.ok) throw new Error('Không thể tải điểm tích lũy');
-  const data = await res.json();
-  return data.Points ?? data.DiemTichLuy ?? 0;
-}
 
-  static async getBookedSeats(movieId: string, showtimeId: string): Promise<number> {
-    const res = await fetch(`${API_BASE_URL}/stats/seats/${movieId}/${showtimeId}`);
-    if (!res.ok) throw new Error('Không thể tải thống kê ghế');
+  static async getPoints(customerId: string): Promise<number> {
+    const res = await fetch(`${API_BASE_URL}/stats/points/${customerId}`);
+    if (!res.ok) throw new Error('Không thể tải điểm tích lũy');
     const data = await res.json();
-    return data.bookedSeats ?? 0;
+    return data.Points ?? data.DiemTichLuy ?? 0;
   }
 
-  static async getTicketCount(movieId: string): Promise<number> {
-    const res = await fetch(`${API_BASE_URL}/stats/tickets/${movieId}`);
-    if (!res.ok) throw new Error('Không thể tải thống kê vé');
+   static async payTicket(ticketId: string, method: string, promoCode?: string | null) {
+    const res = await fetch(`${API_BASE_URL}/tickets/pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticketId,
+        phuongThuc: method,
+        promoCode: promoCode || null,
+      }),
+    });
     const data = await res.json();
-    return data.ticketCount ?? 0;
+    if (!res.ok || data.returnValue < 0) {
+      throw new Error(data.ThongBao || 'Lỗi thanh toán');
+    }
+    return data;
   }
-
-  static async payTicket(ticketId: string, method: string) {
-  const res = await fetch(`${API_BASE_URL}/tickets/pay`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ticketId,
-      phuongThuc: method,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.returnValue < 0) {
-    throw new Error(data.ThongBao || 'Lỗi thanh toán');
-  }
-  return data;
-}
 
 }
 
 /* =========================================
    MAIN COMPONENT
 ========================================= */
+
 const MovieTicketSystem: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('tickets');
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -284,7 +265,6 @@ const MovieTicketSystem: React.FC = () => {
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [selectedShowtime, setSelectedShowtime] = useState<Showtime | null>(null);
   const [selectedSeat, setSelectedSeat] = useState<Seat | null>(null);
-  const [seatStats, setSeatStats] = useState<{ TongSoGhe: number; SoGheKhongTrong: number } | null>(null);
 
   const [selectedRoomName, setSelectedRoomName] = useState<string | null>(null);
 
@@ -304,12 +284,19 @@ const MovieTicketSystem: React.FC = () => {
   const [paymentTicket, setPaymentTicket] = useState<Ticket | null>(null);
   const [showMultiPaymentModal, setShowMultiPaymentModal] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('Momo');
+  // payment promo (single)
+  const [paymentPromoCode, setPaymentPromoCode] = useState('');
+  const [paymentPromoDiscount, setPaymentPromoDiscount] = useState(0);
+  const [paymentPromoError, setPaymentPromoError] = useState<string | null>(null);
+
+  // payment promo (multi)
+  const [multiPaymentPromoCode, setMultiPaymentPromoCode] = useState('');
+  const [multiPaymentPromoDiscount, setMultiPaymentPromoDiscount] = useState(0);
+  const [multiPaymentPromoError, setMultiPaymentPromoError] = useState<string | null>(null);
 
   // stats
   const [stats, setStats] = useState<Stats>({});
   const [statsLoading, setStatsLoading] = useState(false);
-  const [bookedSeatsCount, setBookedSeatsCount] = useState<number | null>(null);
-  const [ticketCountForMovie, setTicketCountForMovie] = useState<number | null>(null);
 
   // theaters management
   const [theaterSearch, setTheaterSearch] = useState('');
@@ -323,15 +310,7 @@ const MovieTicketSystem: React.FC = () => {
   });
   const [editingTheaterId, setEditingTheaterId] = useState<string | null>(null);
   const [theaterFormError, setTheaterFormError] = useState<string | null>(null);
-  const loadShowtimeSeatStats = async () => {
-    if (!selectedMovie || !selectedShowtime) return;
-    try {
-      const stats = await ApiService.getShowtimeSeatStats(selectedMovie.MaPhim, selectedShowtime.MaSuat);
-      setSeatStats(stats);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+
   /* =========================================
      EFFECTS
   ========================================= */
@@ -360,13 +339,6 @@ const MovieTicketSystem: React.FC = () => {
       document.body.style.overflow = 'unset';
     };
   }, [showBookingModal, showDetailModal, showPaymentModal, showMultiPaymentModal]);
-
-  
-  useEffect(() => {
-    if (selectedMovie && selectedShowtime && bookingStep === 'seat') {
-      loadShowtimeSeatStats();
-    }
-  }, [selectedMovie, selectedShowtime, bookingStep]);
 
   /* =========================================
      LOAD FUNCTIONS
@@ -418,36 +390,20 @@ const MovieTicketSystem: React.FC = () => {
   };
 
   const loadStats = async () => {
-  try {
-    setStatsLoading(true);
-    const [savings, spending, points] = await Promise.all([
-      ApiService.getSavings(customerId).catch(() => 0),
-      ApiService.getSpending(customerId).catch(() => 0),
-      ApiService.getPoints(customerId).catch(() => 0),
-    ]);
-    setStats({ savings, spending, points });
-  } catch (err) {
-    console.error('Error loading stats:', err);
-  } finally {
-    setStatsLoading(false);
-  }
-};
-
-
-  const loadShowtimeStats = async () => {
-  if (!selectedMovie || !selectedShowtime) return;
-  try {
-    const [bookedSeats, ticketCount] = await Promise.all([
-      ApiService.getBookedSeats(selectedMovie.MaPhim, selectedShowtime.MaSuat).catch(() => 0),
-      ApiService.getTicketCount(selectedMovie.MaPhim).catch(() => 0),
-    ]);
-    setBookedSeatsCount(bookedSeats);
-    setTicketCountForMovie(ticketCount);
-  } catch (err) {
-    console.error('Error loading showtime stats:', err);
-  }
-};
-
+    try {
+      setStatsLoading(true);
+      const [savings, spending, points] = await Promise.all([
+        ApiService.getSavings(customerId).catch(() => 0),
+        ApiService.getSpending(customerId).catch(() => 0),
+        ApiService.getPoints(customerId).catch(() => 0),
+      ]);
+      setStats({ savings, spending, points });
+    } catch (err) {
+      console.error('Error loading stats:', err);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
 
   const openBookingModal = async () => {
     setShowBookingModal(true);
@@ -463,13 +419,12 @@ const MovieTicketSystem: React.FC = () => {
     setSelectedShowtime(null);
     setSelectedSeat(null);
     setSelectedRoomName(null);
+    setSeats([]);
     setBasePrice(0);
     setFinalPrice(0);
     setPromoCode('');
     setPromoError(null);
     setPromoDiscount(0);
-    setBookedSeatsCount(null);
-    setTicketCountForMovie(null);
     setError(null);
   };
 
@@ -570,6 +525,57 @@ const MovieTicketSystem: React.FC = () => {
       setIsLoading(false);
     }
   };
+  const handleCheckPaymentPromo = async () => {
+    if (!paymentPromoCode.trim()) {
+      setPaymentPromoError('Vui lòng nhập mã khuyến mãi');
+      return;
+    }
+    try {
+      setIsLoading(true);
+      setPaymentPromoError(null);
+      const data = await ApiService.checkPromo(paymentPromoCode.trim());
+      const percent =
+        data.discountPercent ??
+        data.PhanTramGiam ??
+        data.percent ??
+        data.value ??
+        0;
+      setPaymentPromoDiscount(percent);
+    } catch (err) {
+      setPaymentPromoError(
+        err instanceof Error ? err.message : 'Mã khuyến mãi không hợp lệ'
+      );
+      setPaymentPromoDiscount(0);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCheckMultiPaymentPromo = async () => {
+    if (!multiPaymentPromoCode.trim()) {
+      setMultiPaymentPromoError('Vui lòng nhập mã khuyến mãi');
+      return;
+    }
+    try {
+      setIsLoading(true);
+      setMultiPaymentPromoError(null);
+      const data = await ApiService.checkPromo(multiPaymentPromoCode.trim());
+      const percent =
+        data.discountPercent ??
+        data.PhanTramGiam ??
+        data.percent ??
+        data.value ??
+        0;
+      setMultiPaymentPromoDiscount(percent);
+    } catch (err) {
+      setMultiPaymentPromoError(
+        err instanceof Error ? err.message : 'Mã khuyến mãi không hợp lệ'
+      );
+      setMultiPaymentPromoDiscount(0);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleConfirmBooking = async () => {
     if (!selectedTheater || !selectedMovie || !selectedShowtime || !selectedSeat) {
@@ -618,43 +624,42 @@ const MovieTicketSystem: React.FC = () => {
   };
 
   // ============= TICKET MANAGEMENT =============
- const handleCancelSelected = async () => {
-  const ids = Array.from(selectedTickets);
-  if (ids.length === 0) return;
+  const handleCancelSelected = async () => {
+    const ids = Array.from(selectedTickets);
+    if (ids.length === 0) return;
 
-  if (!window.confirm(`Bạn có chắc muốn hủy ${ids.length} vé?`)) return;
+    if (!window.confirm(`Bạn có chắc muốn hủy ${ids.length} vé?`)) return;
 
-  try {
-    setIsLoading(true);
-    setError(null);
+    try {
+      setIsLoading(true);
+      setError(null);
 
-    const result = await ApiService.cancelMany(ids);
-    if (result.results) {
-      const results = result.results as CancelResult[];
-      const successIds = results.filter((r) => r.success).map((r) => r.id);
-      const failedResults = results.filter((r) => !r.success);
+      const result = await ApiService.cancelMany(ids);
+      if (result.results) {
+        const results = result.results as CancelResult[];
+        const successIds = results.filter((r) => r.success).map((r) => r.id);
+        const failedResults = results.filter((r) => !r.success);
 
-      setTickets((prev) =>
-        prev.map((t) => (successIds.includes(t.id) ? { ...t, statusText: 'Huy' } : t))
-      );
-      setSelectedTickets(new Set());
+        setTickets((prev) =>
+          prev.map((t) => (successIds.includes(t.id) ? { ...t, statusText: 'Huy' } : t))
+        );
+        setSelectedTickets(new Set());
 
-      if (failedResults.length > 0) {
-        const msgs = failedResults.map(r => `• Vé ${r.id}: ${r.message}`).join('\n');
-        alert(`Không thể hủy một số vé:\n${msgs}`);
+        if (failedResults.length > 0) {
+          const msgs = failedResults.map((r) => `• Vé ${r.id}: ${r.message}`).join('\n');
+          alert(`Không thể hủy một số vé:\n${msgs}`);
+        } else {
+          alert(`Đã hủy ${successIds.length} vé thành công`);
+        }
       } else {
-        alert(`Đã hủy ${successIds.length} vé thành công`);
+        setError('Kết quả hủy không đúng định dạng');
       }
-
-    } else {
-      setError('Kết quả hủy không đúng định dạng');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Hủy vé thất bại');
+    } finally {
+      setIsLoading(false);
     }
-  } catch (err) {
-    setError(err instanceof Error ? err.message : 'Hủy vé thất bại');
-  } finally {
-    setIsLoading(false);
-  }
-};
+  };
 
   const toggleSelect = (id: string) => {
     setSelectedTickets((prev) => {
@@ -689,7 +694,11 @@ const MovieTicketSystem: React.FC = () => {
 
   const allVisibleUnpaidSelected = useMemo(() => {
     const unpaidVisible = visibleTickets.filter((t) => t.statusText === 'ChuaThanhToan');
-    return unpaidVisible.length > 0 && unpaidVisible.every((t) => selectedTickets.has(t.id)) && selectedTickets.size > 0;
+    return (
+      unpaidVisible.length > 0 &&
+      unpaidVisible.every((t) => selectedTickets.has(t.id)) &&
+      selectedTickets.size > 0
+    );
   }, [visibleTickets, selectedTickets]);
 
   const renderStatusBadge = (status: Ticket['statusText']) => {
@@ -716,12 +725,17 @@ const MovieTicketSystem: React.FC = () => {
     }
   };
 
-  const handlePayTicket = (ticket: Ticket) => {
+    const handlePayTicket = (ticket: Ticket) => {
     setPaymentTicket(ticket);
+    // reset promo khi mở modal
+    setPaymentPromoCode('');
+    setPaymentPromoDiscount(0);
+    setPaymentPromoError(null);
     setShowPaymentModal(true);
   };
 
-  const handlePaySelectedTickets = async () => {
+
+    const handlePaySelectedTickets = async () => {
     const unpaidSelected = Array.from(selectedTickets).filter((id) => {
       const ticket = tickets.find((t) => t.id === id);
       return ticket && ticket.statusText === 'ChuaThanhToan';
@@ -732,25 +746,37 @@ const MovieTicketSystem: React.FC = () => {
       return;
     }
 
+    // reset promo khi mở modal
+    setMultiPaymentPromoCode('');
+    setMultiPaymentPromoDiscount(0);
+    setMultiPaymentPromoError(null);
+
     setShowMultiPaymentModal(true);
   };
 
+
   // Thanh toán 1 vé
-  const handleConfirmPayment = async () => {
+    const handleConfirmPayment = async () => {
     if (!paymentTicket) return;
 
     try {
       setIsLoading(true);
       setError(null);
 
-      const result = await ApiService.payTicket(paymentTicket.id, paymentMethod);
+      const promoToSend =
+        paymentPromoDiscount > 0 ? paymentPromoCode.trim() : null;
+
+      const result = await ApiService.payTicket(
+        paymentTicket.id,
+        paymentMethod,
+        promoToSend
+      );
 
       setShowPaymentModal(false);
       setPaymentTicket(null);
 
       alert(`✅ ${result.ThongBao ?? 'Thanh toán thành công'}`);
 
-      // Reload danh sách vé từ DB, trạng thái sẽ là "Đã đặt" do trigger cập nhật
       await loadTickets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Thanh toán thất bại');
@@ -758,6 +784,7 @@ const MovieTicketSystem: React.FC = () => {
       setIsLoading(false);
     }
   };
+
 
   // Thanh toán nhiều vé
   const handleConfirmMultiPayment = async () => {
@@ -770,14 +797,19 @@ const MovieTicketSystem: React.FC = () => {
         return ticket && ticket.statusText === 'ChuaThanhToan';
       });
 
+            const promoToSend =
+        multiPaymentPromoDiscount > 0 ? multiPaymentPromoCode.trim() : null;
+
       const response = await fetch(`${API_BASE_URL}/tickets/pay-multiple`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticketIds,
           phuongThuc: paymentMethod,
+          promoCode: promoToSend,
         }),
       });
+
 
       const data = await response.json();
 
@@ -901,6 +933,31 @@ const MovieTicketSystem: React.FC = () => {
     );
   }, [theaters, theaterSearch]);
 
+  // ============= SEAT STATS (tính trực tiếp từ seats) =============
+  const totalSeats = useMemo(() => seats.length, [seats]);
+  const bookedSeatCount = useMemo(
+    () => seats.filter((s) => s.TinhTrang !== 'Trống').length,
+    [seats]
+  );
+  const singlePaymentBasePrice = paymentTicket?.price ?? 0;
+  const singlePaymentFinalPrice = Math.round(
+    singlePaymentBasePrice * (1 - paymentPromoDiscount / 100)
+  );
+
+  const multiPaymentBaseTotal = useMemo(() => {
+    return Array.from(selectedTickets).reduce((sum, id) => {
+      const ticket = tickets.find((t) => t.id === id);
+      if (ticket && ticket.statusText === 'ChuaThanhToan') {
+        return sum + (ticket.price || 0);
+      }
+      return sum;
+    }, 0);
+  }, [selectedTickets, tickets]);
+
+  const multiPaymentFinalTotal = Math.round(
+    multiPaymentBaseTotal * (1 - multiPaymentPromoDiscount / 100)
+  );
+
   // ============= RENDER =============
   return (
     <div className="mt-root">
@@ -921,9 +978,9 @@ const MovieTicketSystem: React.FC = () => {
             </button>
             <button className="btn btn-primary" onClick={openBookingModal}>
               <svg width="20" height="20" viewBox="0 0 24 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M11 13H5V11H11V5H13V11H19V13H13V19H11V13Z" fill="#FEF7FF"/>
+                <path d="M11 13H5V11H11V5H13V11H19V13H13V19H11V13Z" fill="#FEF7FF" />
               </svg>
-                  Đặt vé
+              Đặt vé
             </button>
           </div>
         </div>
@@ -1009,7 +1066,7 @@ const MovieTicketSystem: React.FC = () => {
                           {ticket.room} • Ghế {ticket.seat}
                         </div>
                         <div className="mt-meta small">
-                          {ticket.showDate} {ticket.startTime}
+                          {ticket.showDate.slice(0,10)} {ticket.startTime}
                         </div>
                       </div>
                       <div className="mt-card-right">
@@ -1059,9 +1116,9 @@ const MovieTicketSystem: React.FC = () => {
                   <div className="stat-value">{(stats.spending ?? 0).toLocaleString('vi-VN')} đ</div>
                 </div>
                 <div className="stat-card">
-                <div className="stat-title">Điểm tích lũy</div>
-                <div className="stat-value">{stats.points ?? 0}</div>
-              </div>
+                  <div className="stat-title">Điểm tích lũy</div>
+                  <div className="stat-value">{stats.points ?? 0}</div>
+                </div>
               </div>
             )}
           </section>
@@ -1097,42 +1154,42 @@ const MovieTicketSystem: React.FC = () => {
                       disabled={!!editingTheaterId}
                       onChange={(e) => handleTheaterFormChange('MaRap', e.target.value)}
                       className="mt-search"
-                      style={{ boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                     <input
                       placeholder="Tên rạp"
                       value={theaterForm.TenRap}
                       onChange={(e) => handleTheaterFormChange('TenRap', e.target.value)}
                       className="mt-search"
-                      style={{  boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                     <input
                       placeholder="Địa chỉ"
                       value={theaterForm.DiaChi}
                       onChange={(e) => handleTheaterFormChange('DiaChi', e.target.value)}
                       className="mt-search"
-                      style={{  boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                     <input
                       placeholder="Thành phố"
                       value={theaterForm.ThanhPho}
                       onChange={(e) => handleTheaterFormChange('ThanhPho', e.target.value)}
                       className="mt-search"
-                      style={{  boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                     <input
                       placeholder="Số điện thoại"
                       value={theaterForm.SoDienThoai}
                       onChange={(e) => handleTheaterFormChange('SoDienThoai', e.target.value)}
                       className="mt-search"
-                      style={{  boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                     <input
                       placeholder="Email"
                       value={theaterForm.Email}
                       onChange={(e) => handleTheaterFormChange('Email', e.target.value)}
                       className="mt-search"
-                      style={{  boxShadow: 'none', color:'black' }}
+                      style={{ boxShadow: 'none', color: 'black' }}
                     />
                   </div>
 
@@ -1211,6 +1268,7 @@ const MovieTicketSystem: React.FC = () => {
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M6.4 19L5 17.6L10.6 12L5 6.4L6.4 5L12 10.6L17.6 5L19 6.4L13.4 12L19 17.6L17.6 19L12 13.4L6.4 19Z" fill="#1D1B20"/>
                 </svg>
+
               </button>
             </div>
             <div className="mt-modal-body">
@@ -1243,7 +1301,7 @@ const MovieTicketSystem: React.FC = () => {
                   {showtimes.map((st) => (
                     <div key={st.MaSuat} className="booking-item" onClick={() => handleShowtimeSelect(st)}>
                       <div className="booking-title">
-                        {st.NgayChieu} {st.GioChieu}
+                        {st.NgayChieu.slice(0,10)} vào {st.GioChieu}
                       </div>
                       <div className="booking-sub">Phòng: {st.TenPhong}</div>
                     </div>
@@ -1251,45 +1309,39 @@ const MovieTicketSystem: React.FC = () => {
                 </div>
               )}
 
-           {bookingStep === 'seat' && (
-            <div>
-              {seatStats && (
-                <div className="seat-stats">
-                  Đã có <strong>{seatStats.SoGheKhongTrong}</strong> /
-                  <strong>{seatStats.TongSoGhe}</strong> ghế được đặt (
-                  {seatStats.TongSoGhe > 0
-                    ? Math.round((seatStats.SoGheKhongTrong / seatStats.TongSoGhe) * 100)
-                    : 0}
-                  % sức chứa).
+              {bookingStep === 'seat' && (
+                <div>
+                  <div className="seat-stats">
+                    Đã có <strong>{bookedSeatCount}</strong> / <strong>{totalSeats}</strong> ghế được đặt (
+                    {totalSeats > 0 ? Math.round((bookedSeatCount / totalSeats) * 100) : 0}% sức chứa).
+                  </div>
+
+                  <div className="seat-grid">
+                    {seats.map((s) => (
+                      <button
+                        key={s.MaGhe}
+                        className={`seat ${
+                          s.TinhTrang === 'Trống'
+                            ? 'seat-available'
+                            : s.TinhTrang === 'Chờ'
+                            ? 'seat-pending'
+                            : 'seat-taken'
+                        }`}
+                        onClick={() => handleSeatSelect(s)}
+                        disabled={s.TinhTrang !== 'Trống'}
+                      >
+                        {s.MaGhe}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="seat-note">
+                    <span className="seat seat-available sample" /> Trống
+                    <span className="seat seat-pending sample" /> Chờ thanh toán
+                    <span className="seat seat-taken sample" /> Đã đặt
+                  </div>
                 </div>
               )}
-
-              <div className="seat-grid">
-                {seats.map((s) => (
-                  <button
-                    key={s.MaGhe}
-                    className={`seat ${
-                      s.TinhTrang === 'Trống'
-                        ? 'seat-available'
-                        : s.TinhTrang === 'Chờ'
-                        ? 'seat-pending'
-                        : 'seat-taken'
-                    }`}
-                    onClick={() => handleSeatSelect(s)}
-                    disabled={s.TinhTrang !== 'Trống'}
-                  >
-                    {s.MaGhe}
-                  </button>
-                ))}
-              </div>
-
-              <div className="seat-note">
-                <span className="seat seat-available sample" /> Trống
-                <span className="seat seat-pending sample" /> Chờ thanh toán
-                <span className="seat seat-taken sample" /> Đã đặt
-              </div>
-            </div>
-          )}
 
               {bookingStep === 'confirm' && selectedSeat && (
                 <div className="confirm-panel">
@@ -1300,7 +1352,7 @@ const MovieTicketSystem: React.FC = () => {
                     <strong>Phim:</strong> {selectedMovie?.TenPhim}
                   </div>
                   <div>
-                    <strong>Suất:</strong> {selectedShowtime?.NgayChieu} {selectedShowtime?.GioChieu}
+                    <strong>Suất:</strong> {selectedShowtime?.NgayChieu.slice(0,10)} {selectedShowtime?.GioChieu}
                   </div>
                   <div>
                     <strong>Phòng / Ghế:</strong> {selectedRoomName} / {selectedSeat.MaGhe}
@@ -1349,10 +1401,18 @@ const MovieTicketSystem: React.FC = () => {
             <div className="mt-modal-header">
               <h3>Chi tiết vé</h3>
               <button className="btn-icon" onClick={() => setShowDetailModal(false)}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M6.4 19L5 17.6L10.6 12L5 6.4L6.4 5L12 10.6L17.6 5L19 6.4L13.4 12L19 17.6L17.6 19L12 13.4L6.4 19Z" fill="#1D1B20"/>
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M6.4 19L5 17.6L10.6 12L5 6.4L6.4 5L12 10.6L17.6 5L19 6.4L13.4 12L19 17.6L17.6 19L12 13.4L6.4 19Z"
+                    fill="#1D1B20"
+                  />
                 </svg>
-
               </button>
             </div>
             <div className="mt-modal-body">
@@ -1379,10 +1439,10 @@ const MovieTicketSystem: React.FC = () => {
                     <b>Loại ghế:</b> {detailTicket.LoaiGhe ?? '-'}
                   </div>
                   <div>
-                    <b>Ngày chiếu:</b> {detailTicket.NgayChieu ?? detailTicket.showDate}
+                    <b>Ngày chiếu:</b> {detailTicket.NgayChieu.slice(0,10) ?? detailTicket.showDate}
                   </div>
                   <div>
-                    <b>Giờ chiếu:</b> {detailTicket.GioChieu ?? detailTicket.startTime}
+                    <b>Giờ chiếu:</b> {detailTicket.GioChieu.slice(11,16) ?? detailTicket.startTime}
                   </div>
                   <div>
                     <b>Trạng thái:</b> {detailTicket.TrangThai ?? detailTicket.statusText}
@@ -1420,11 +1480,14 @@ const MovieTicketSystem: React.FC = () => {
             <div className="mt-modal-header">
               <h3>Thanh toán vé</h3>
               <button className="btn-icon" onClick={() => setShowPaymentModal(false)}>
-                ✕
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.4 19L5 17.6L10.6 12L5 6.4L6.4 5L12 10.6L17.6 5L19 6.4L13.4 12L19 17.6L17.6 19L12 13.4L6.4 19Z" fill="#1D1B20"/>
+                </svg>
+
               </button>
             </div>
             <div className="mt-modal-body">
-              <div className="payment-summary">
+                            <div className="payment-summary">
                 <div>
                   <strong>Phim:</strong> {paymentTicket.movieName}
                 </div>
@@ -1432,9 +1495,36 @@ const MovieTicketSystem: React.FC = () => {
                   <strong>Ghế:</strong> {paymentTicket.seat}
                 </div>
                 <div className="pay-amount">
-                  <strong>Số tiền:</strong> {formatCurrency(paymentTicket.price)}
+                  <strong>Số tiền phải trả:</strong>{' '}
+                  {formatCurrency(singlePaymentFinalPrice)}
                 </div>
+                {paymentPromoDiscount > 0 && (
+                  <div className="mt-meta small">
+                    Giá gốc: {formatCurrency(singlePaymentBasePrice)} • Giảm:{' '}
+                    {paymentPromoDiscount}%
+                  </div>
+                )}
               </div>
+              <label className="label">Mã khuyến mãi (nếu có)</label>
+              <div className="promo-row">
+                <input
+                  placeholder="Nhập mã khuyến mãi"
+                  value={paymentPromoCode}
+                  onChange={(e) => setPaymentPromoCode(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleCheckPaymentPromo}
+                  disabled={isLoading}
+                >
+                  Áp dụng
+                </button>
+              </div>
+              {paymentPromoError && (
+                <div className="mt-error">{paymentPromoError}</div>
+              )}
+
 
               <label className="label">Chọn phương thức</label>
               <select
@@ -1464,23 +1554,48 @@ const MovieTicketSystem: React.FC = () => {
             <div className="mt-modal-header">
               <h3>Thanh toán {selectedTickets.size} vé</h3>
               <button className="btn-icon" onClick={() => setShowMultiPaymentModal(false)}>
-                ✕
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.4 19L5 17.6L10.6 12L5 6.4L6.4 5L12 10.6L17.6 5L19 6.4L13.4 12L19 17.6L17.6 19L12 13.4L6.4 19Z" fill="#1D1B20"/>
+                </svg>
+
               </button>
             </div>
             <div className="mt-modal-body">
-              <div className="payment-summary">
+                            <div className="payment-summary">
                 <div>
                   <strong>Số vé:</strong> {selectedTickets.size}
                 </div>
                 <div className="pay-amount">
-                  <strong>Tổng tiền:</strong>{' '}
-                  {formatCurrency(
-                    Array.from(selectedTickets)
-                      .map((id) => tickets.find((t) => t.id === id)?.price || 0)
-                      .reduce((a, b) => a + b, 0)
+                  <strong>Tổng phải trả:</strong>{' '}
+                  {formatCurrency(multiPaymentFinalTotal)}
+                </div>
+                <div className="mt-meta small">
+                  Tổng gốc: {formatCurrency(multiPaymentBaseTotal)}
+                  {multiPaymentPromoDiscount > 0 && (
+                    <> • Giảm: {multiPaymentPromoDiscount}%</>
                   )}
                 </div>
               </div>
+              <label className="label">Mã khuyến mãi (nếu có)</label>
+              <div className="promo-row">
+                <input
+                  placeholder="Nhập mã khuyến mãi"
+                  value={multiPaymentPromoCode}
+                  onChange={(e) => setMultiPaymentPromoCode(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleCheckMultiPaymentPromo}
+                  disabled={isLoading}
+                >
+                  Áp dụng
+                </button>
+              </div>
+              {multiPaymentPromoError && (
+                <div className="mt-error">{multiPaymentPromoError}</div>
+              )}
+
 
               <label className="label">Chọn phương thức</label>
               <select

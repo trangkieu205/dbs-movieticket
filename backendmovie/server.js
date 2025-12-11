@@ -49,6 +49,7 @@ app.use(ensureConnection);
 // ============================================================
 
 // 1) GetTicketsByCustomer
+// 1) GetTicketsByCustomer
 app.get('/tickets', async (req, res) => {
   try {
     const customerId = req.query.customerId || 'KH01';
@@ -56,12 +57,35 @@ app.get('/tickets', async (req, res) => {
       .input('MaKH', sql.VarChar(10), customerId)
       .execute('GetTicketsByCustomer');
 
-    return res.json(result.recordset);
+    // Format lại NgayChieu & GioChieu cho đẹp
+    const formatted = result.recordset.map(row => {
+      let ngayChieu = row.NgayChieu;
+      let gioChieu = row.GioChieu;
+
+      // Nếu NgayChieu là Date -> lấy yyyy-MM-dd
+      if (ngayChieu instanceof Date) {
+        ngayChieu = ngayChieu.toISOString().slice(0, 10);
+      }
+
+      // Nếu GioChieu là Date (thường là 1970-01-01Txx:yy:zzZ) -> lấy HH:mm
+      if (gioChieu instanceof Date) {
+       gioChieu = gioChieu.toISOString().slice(11, 16);
+      }
+
+      return {
+        ...row,
+        NgayChieu: ngayChieu,
+        GioChieu: gioChieu,
+      };
+    });
+
+    return res.json(formatted);
   } catch (err) {
     console.error('Error /tickets:', err);
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // 2) GetTheaters
 app.get('/theaters', async (req, res) => {
@@ -188,6 +212,7 @@ app.get('/theaters/:theaterId/movies', async (req, res) => {
 });
 
 // 4) GetShowtimes
+// 4) GetShowtimes
 app.get('/theaters/:theaterId/movies/:movieId/showtimes', async (req, res) => {
   try {
     const { theaterId, movieId } = req.params;
@@ -196,12 +221,31 @@ app.get('/theaters/:theaterId/movies/:movieId/showtimes', async (req, res) => {
       .input('MaPhim', sql.VarChar(10), movieId)
       .execute('GetShowtimes');
 
-    return res.json(result.recordset);
+    const formatted = result.recordset.map(row => {
+      let ngayChieu = row.NgayChieu;
+      let gioChieu = row.GioChieu;
+
+      if (ngayChieu instanceof Date) {
+        ngayChieu = ngayChieu.toISOString().slice(0, 10);
+      }
+      if (gioChieu instanceof Date) {
+        gioChieu = gioChieu.toISOString().slice(11, 16);
+      }
+
+      return {
+        ...row,
+        NgayChieu: ngayChieu,
+        GioChieu: gioChieu,
+      };
+    });
+
+    return res.json(formatted);
   } catch (err) {
     console.error('Error /showtimes', err);
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // 5) GetSeatsByShowtime
 app.get('/seats', async (req, res) => {
@@ -365,7 +409,7 @@ app.post('/tickets/bulk-cancel', async (req, res) => {
 // 8.x) ThanhToanVe - Pay SINGLE ticket (nhận MaVe, tìm MaGD, gọi ThanhToanVe)
 app.post('/tickets/pay', async (req, res) => {
   try {
-    const { ticketId, phuongThuc } = req.body;
+    const { ticketId, phuongThuc, promoCode } = req.body;
 
     if (!ticketId) {
       return res.status(400).json({
@@ -380,11 +424,11 @@ app.post('/tickets/pay', async (req, res) => {
       });
     }
 
-    // Lấy MaGiaoDich từ vé
+    // Lấy MaGiaoDich từ vé + thông tin GiaoDich
     const ticketResult = await pool.request()
       .input('MaVe', sql.VarChar(20), ticketId)
       .query(`
-        SELECT v.MaGiaoDich, gd.TongSoTien
+        SELECT v.MaGiaoDich, gd.TongSoTien, gd.MaKM
         FROM VePhim v
         LEFT JOIN GiaoDich gd ON v.MaGiaoDich = gd.MaGiaoDich
         WHERE v.MaVe = @MaVe
@@ -407,6 +451,57 @@ app.post('/tickets/pay', async (req, res) => {
       });
     }
 
+    let finalTotal = row.TongSoTien || 0;
+
+    // Áp dụng khuyến mãi (nếu có). Mỗi giao dịch chỉ được áp dụng 1 mã.
+    if (promoCode) {
+      if (row.MaKM) {
+        return res.status(400).json({
+          returnValue: -1,
+          ThongBao: 'Giao dịch đã có mã khuyến mãi, không thể áp thêm'
+        });
+      }
+
+      const promoResult = await pool.request()
+        .input('MaKM', sql.VarChar(20), promoCode)
+        .execute('CheckPromo');
+
+      if (!promoResult.recordset || promoResult.recordset.length === 0) {
+        return res.status(400).json({
+          returnValue: -1,
+          ThongBao: 'Mã khuyến mãi không hợp lệ hoặc đã hết hạn'
+        });
+      }
+
+      const promo = promoResult.recordset[0];
+      const percent = promo.PhanTramGiam || 0;
+
+      if (percent > 0) {
+        finalTotal = Math.round(finalTotal * (1 - percent / 100.0));
+      }
+
+      // Cập nhật GiaoDich với giá sau giảm và mã KM
+      await pool.request()
+        .input('MaGiaoDich', sql.VarChar(20), maGD)
+        .input('TongSoTien', sql.Decimal(18, 0), finalTotal)
+        .input('MaKM', sql.VarChar(20), promoCode)
+        .query(`
+          UPDATE GiaoDich
+          SET TongSoTien = @TongSoTien,
+              MaKM       = @MaKM
+          WHERE MaGiaoDich = @MaGiaoDich
+        `);
+
+      // Giảm số lượng mã KM
+      await pool.request()
+        .input('MaKM', sql.VarChar(20), promoCode)
+        .query(`
+          UPDATE MaKhuyenMai
+          SET SoLuong = SoLuong - 1
+          WHERE MaKM = @MaKM AND SoLuong > 0
+        `);
+    }
+
     const payReq = pool.request()
       .input('MaGD', sql.VarChar(20), maGD)
       .input('PhuongThucTT', sql.NVarChar(50), phuongThuc)
@@ -417,7 +512,7 @@ app.post('/tickets/pay', async (req, res) => {
     return res.status(200).json({
       returnValue: payResult.returnValue,
       MaGD: maGD,
-      TongTien: row.TongSoTien || null,
+      TongTien: finalTotal,
       ThongBao: payResult.output.ThongBao
     });
   } catch (err) {
@@ -429,21 +524,22 @@ app.post('/tickets/pay', async (req, res) => {
   }
 });
 
-// 9) Thanh toán nhiều vé (vẫn dùng proc ThanhToanNhieuVe nếu bạn đã tạo)
+// 9) Thanh toán nhiều vé (dùng proc ThanhToanNhieuVe, hỗ trợ 1 mã khuyến mãi/lần thanh toán)
 app.post('/tickets/pay-multiple', async (req, res) => {
   try {
-    const { ticketIds, phuongThuc } = req.body;  // ticketIds: ["VE001", "VE002"]
+    const { ticketIds, phuongThuc, promoCode } = req.body;  // ticketIds: ["VE001", "VE002"]
     
     if (!ticketIds || ticketIds.length === 0) {
       return res.status(400).json({ error: 'Chưa chọn vé nào' });
     }
 
     const request = pool.request()
-      .input('MaKH', sql.VarChar(10), 'KH01')
+      .input('MaKH', sql.VarChar(10), 'KH01') // tạm thời fix KH01
       .input('DanhSachMaVe', sql.NVarChar(sql.MAX), JSON.stringify(ticketIds))
       .input('PhuongThucTT', sql.NVarChar(50), phuongThuc)
+      .input('MaKM', sql.VarChar(20), promoCode || null)
       .output('MaGD', sql.VarChar(20))
-      .output('TongTien', sql.Decimal(18,0))
+      .output('TongTien', sql.Decimal(18, 0))
       .output('ThongBao', sql.NVarChar(255));
 
     const result = await request.execute('ThanhToanNhieuVe');

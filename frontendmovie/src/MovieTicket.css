@@ -179,7 +179,7 @@
 /* Seats */
 .seat-grid{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .seat{ padding:8px 10px; border-radius:8px; border:1px solid #e6eef8; cursor:pointer; min-width:54px; text-align:center; background:var(--card); }
-.seat-available{ background: #eef9ff; border-color:#cfe9ff; }
+.seat-available{ background: #eef9ff; border-color:#cfe9ff; color:#0b63c6}
 .seat-pending{ background:#fff7e6; border-color:#ffe7b2; color:#8a5a00; }
 .seat-taken{ background:#fff0f0; border-color:#ffd6d6; color:#9b2c2c; cursor:not-allowed; }
 .seat-note{ color:var(--muted); margin-top:8px; }
