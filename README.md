@@ -1,131 +1,195 @@
 Database Systems – Assignment 2
 SQL Query Design & Implementation Report
-Overview
----
 
-This project is developed as part of the Database Systems (CSE 251) course.
-The objective of this assignment is to design, implement, and demonstrate SQL queries that solve practical data management and business-related problems using a relational database system.
 
-The project focuses on database schema design, data modeling, and advanced SQL query implementation.
+ Movie Ticket Booking System – Database Implementation
 
-Objectives
----
+A relational database project built using Microsoft SQL Server that simulates a real-world cinema ticket booking system with transaction handling, business constraints, and loyalty point management.
 
-Design a relational database schema based on given requirements
+Developed as part of the Database Systems course project.
 
-Implement tables with appropriate constraints and relationships
+Project Overview
 
-Populate the database with sample data
+This project implements the backend database layer of a movie ticket booking system.
+It focuses on:
 
-Write and execute SQL queries to extract meaningful information
+Relational schema design
 
-Apply advanced SQL concepts such as:
+Business rule enforcement at the database level
 
-JOIN operations
+Transaction consistency
 
-GROUP BY & HAVING
+Prevention of double booking
 
-Subqueries
+Loyalty point calculation automation
 
-Aggregate functions
+The system models real-world cinema operations including theaters, movies, showtimes, seats, transactions, vouchers, and customers.
 
-Nested queries
+Database Design
+Core Entities
 
-System Design
----
+Account
 
-The database system includes:
+Customer
 
-Entity tables with primary keys
+Staff
 
-Foreign key constraints to ensure referential integrity
+Theater
 
-Logical relationships between entities
+Screening Room
 
-Structured sample datasets for testing query correctness
+Movie
 
-The schema is designed to reflect real-world business logic and support analytical queries.
+Showtime
 
-Key Features
----
+Seat
 
-Structured database schema design
+Ticket
 
-Data validation through constraints
+Transaction
 
-Query optimization considerations
+Promotion / Voucher
 
-Implementation of business logic using SQL
+Loyalty Point History
 
-Clear separation between data definition and data manipulation
+The schema is designed with:
+
+Primary Keys
+
+Foreign Keys
+
+CHECK constraints
+
+UNIQUE constraints
+
+Triggers for business logic
+
+Stored Procedures for CRUD operations
+
+Business Logic Implemented at Database Layer
+Double Booking Prevention
+
+A trigger ensures that:
+
+A seat cannot be booked more than once for the same showtime
+
+Conflicting inserts are automatically rejected
+
+Transaction is rolled back if violation occurs
+
+This guarantees data consistency even under concurrent booking attempts.
+
+Automated Loyalty Point System
+
+When a transaction status changes to "Successful":
+
+Loyalty points are automatically calculated
+
+Points are updated in real-time
+
+History of point changes is recorded
+
+No application-layer logic required.
+
+Controlled Deletion with Referential Integrity
+
+Stored procedures validate:
+
+A theater cannot be deleted if related rooms, seats, or showtimes exist
+
+Data integrity is preserved before destructive operations
 
 Technologies Used
- ---
 
-Microsoft SQL Server / MSSQL
+Microsoft SQL Server
 
-SQL (DDL, DML, DQL)
+T-SQL
 
-Relational Database Modeling
+Stored Procedures
+
+Triggers
+
+Cursors
+
+Relational Data Modeling (ERD)
 
 Project Structure
----
+/database
+    ├── create_tables.sql
+    ├── insert_sample_data.sql
+    ├── stored_procedures.sql
+    ├── triggers.sql
+    ├── functions.sql
+    └── test_queries.sql
+
 /report
-    ├── Database schema design
-    ├── ERD diagram
-    ├── Table definitions (DDL)
-    ├── Data insertion scripts
-    ├── SQL query implementations
-    └── Query explanations and results
-
-Implementation Details
- ---
-
-The report includes:
-
-Database schema definition
-
-Data insertion statements
-
-Required SQL queries
-
-Explanation for each query
-
-Query results and output screenshots
-
-Each query is implemented to ensure correctness, readability, and compliance with SQL standards.
+    └── Full_Project_Report.pdf
 
 How to Run
----
 
-Open Microsoft SQL Server Management Studio (SSMS)
+Open SQL Server Management Studio (SSMS)
 
 Create a new database
 
-Execute the provided SQL script in the following order:
+Run scripts in the following order:
 
-Create tables
+create_tables.sql
 
-Insert data
+insert_sample_data.sql
 
-Execute queries
+stored_procedures.sql
 
-Review query results
+triggers.sql
 
- Learning Outcomes
- ---
+functions.sql
 
-Through this project, the following skills were developed:
+Execute test_queries.sql to verify functionality
 
-Database schema design
+Sample Features Demonstrated
 
-SQL query construction
+CRUD operations via Stored Procedures
 
-Logical thinking in relational data modeling
+JOIN-based reporting queries
 
-Data integrity management
+Aggregation and statistical queries
 
-Translating business requirements into structured queries
+Cursor-based calculations
+
+Transaction validation
+
+Derived attribute automation
+
+Real-time seat availability control
+
+Performance & Integrity Considerations
+
+Referential integrity strictly enforced
+
+CHECK constraints prevent invalid data
+
+Triggers handle complex cross-table validation
+
+Schema normalized to reduce redundancy
+
+Future optimization may include:
+
+Indexing strategy improvements
+
+Isolation level tuning for concurrency control
+
+Performance benchmarking
+
+Key Learning Outcomes
+
+Translating business requirements into relational models
+
+Implementing real-world constraints in SQL Server
+
+Designing systems with transactional consistency
+
+Understanding database-layer responsibility in fullstack systems
+
+Applying database logic to support scalable applications
 
 Notes
 ---
